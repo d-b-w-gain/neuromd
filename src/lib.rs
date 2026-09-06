@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use std::slice;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-const RESET: &str = "\x1b[0m";
+const RESET: &str = "\x1b[0;48;2;0;0;0m";
 const NORMAL: &str = "\x1b[38;2;184;230;218m";
 const HEADING: &str = "\x1b[1;38;2;0;255;204m";
 const STRONG: &str = "\x1b[1;38;2;190;255;70m";

@@ -1,5 +1,7 @@
 const ESC = "\x1b[";
-const RESET = `${ESC}0m`;
+const TERMINAL_RESET = `${ESC}0m`;
+const BLACK_BACKGROUND = `${ESC}48;2;0;0;0m`;
+const RESET = `${TERMINAL_RESET}${BLACK_BACKGROUND}`;
 const CYAN = `${ESC}38;2;0;255;204m`;
 const MAGENTA = `${ESC}38;2;190;110;255m`;
 const PALE = `${ESC}38;2;184;230;218m`;
@@ -384,7 +386,7 @@ async function showBootLogo(): Promise<boolean> {
 }
 
 async function clearScreenBlack(): Promise<void> {
-  await write(`${RESET}${ESC}48;2;0;0;0m${ESC}2J${ESC}H`);
+  await write(`${RESET}${ESC}2J${ESC}H`);
 }
 
 function keyIncludes(data: string, ...keys: string[]): boolean {
@@ -438,7 +440,7 @@ const input = new Uint8Array(32);
 try {
   Deno.stdin.setRaw(true);
   await write(
-    `\x1b]0;NeuroMD — ${fileName}\x07${ESC}?1049h${ESC}?25l${ESC}48;2;0;0;0m${ESC}2J`,
+    `\x1b]0;NeuroMD — ${fileName}\x07${ESC}?1049h${ESC}?25l${BLACK_BACKGROUND}${ESC}2J`,
   );
   running = await showBootLogo();
   if (running) {
@@ -461,5 +463,5 @@ try {
   }
 } finally {
   Deno.stdin.setRaw(false);
-  await write(`${RESET}${ESC}?7h${ESC}?25h${ESC}?1049l`);
+  await write(`${TERMINAL_RESET}${ESC}?7h${ESC}?25h${ESC}?1049l`);
 }
