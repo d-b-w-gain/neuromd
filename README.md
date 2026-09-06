@@ -8,7 +8,7 @@ The viewer tracks terminal resizing and redraws to use the full available width 
 It maintains a true-black application background across ANSI style resets and restores the terminal's normal colors when it exits.
 Resize events are debounced to avoid repaint stutter in embedded and docked terminal emulators.
 The startup ident also redraws after a dock or window resize instead of allowing the
-terminal to reflow an obsolete frame. Its visible `v0.3.0` marker identifies the
+terminal to reflow an obsolete frame. Its visible `v0.3.1` marker identifies the
 running build in screenshots and issue reports.
 
 ## Run

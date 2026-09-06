@@ -1,5 +1,5 @@
 const ESC = "\x1b[";
-const VERSION = "0.3.0";
+const VERSION = "0.3.1";
 const TERMINAL_RESET = `${ESC}0m`;
 const BLACK_BACKGROUND = `${ESC}48;2;0;0;0m`;
 const RESET = `${TERMINAL_RESET}${BLACK_BACKGROUND}`;
@@ -591,13 +591,13 @@ async function playSpeech(
   try {
     await Deno.writeFile(audioPath, audio);
     const quotedAudioPath = audioPath.replaceAll("'", "''");
+    // stdout/stderr are already piped, so the helper creates no separate UI.
+    // PowerShell's -WindowStyle Hidden can hide the shared terminal host itself.
     const command = new Deno.Command("powershell.exe", {
       args: [
         "-NoLogo",
         "-NoProfile",
         "-NonInteractive",
-        "-WindowStyle",
-        "Hidden",
         "-Command",
         `$p=New-Object System.Media.SoundPlayer('${quotedAudioPath}');$p.Load();[Console]::Out.WriteLine('READY');$p.PlaySync()`,
       ],
