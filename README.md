@@ -4,6 +4,7 @@ NeuroMD is a local, read-only terminal Markdown viewer. Markdown parsing and ter
 
 The viewer tracks terminal resizing and redraws to use the full available width and height.
 It maintains a true-black application background across ANSI style resets and restores the terminal's normal colors when it exits.
+Resize events are debounced to avoid repaint stutter in embedded and docked terminal emulators.
 
 ## Run
 

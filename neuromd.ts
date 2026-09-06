@@ -94,8 +94,11 @@ function renderMarkdown(markdown: string, width: number): string[] {
 function terminalSize(): { columns: number; rows: number } {
   try {
     const size = Deno.consoleSize();
+    const rawColumns = Math.max(24, size.columns);
     return {
-      columns: Math.max(24, size.columns),
+      // Some embedded terminals oscillate by one reported column as their
+      // scrollbar appears. An even render width absorbs that layout jitter.
+      columns: rawColumns - (rawColumns % 2),
       rows: Math.max(8, size.rows),
     };
   } catch {
@@ -277,8 +280,7 @@ function clampScroll(lines = activeLines()): void {
   );
 }
 
-function refreshTerminalSize(): boolean {
-  const nextSize = terminalSize();
+function refreshTerminalSize(nextSize = terminalSize()): boolean {
   if (nextSize.columns === size.columns && nextSize.rows === size.rows) {
     return false;
   }
@@ -346,9 +348,36 @@ function queueDraw(): Promise<void> {
 }
 
 async function watchTerminalSize(): Promise<void> {
+  let candidate: { columns: number; rows: number } | undefined;
+  let stableSamples = 0;
+
   while (running) {
     await new Promise((resolve) => setTimeout(resolve, 120));
-    if (running && refreshTerminalSize()) await queueDraw();
+    if (!running) break;
+
+    const observed = terminalSize();
+    if (observed.columns === size.columns && observed.rows === size.rows) {
+      candidate = undefined;
+      stableSamples = 0;
+      continue;
+    }
+
+    if (
+      candidate?.columns === observed.columns &&
+      candidate.rows === observed.rows
+    ) {
+      stableSamples += 1;
+    } else {
+      candidate = observed;
+      stableSamples = 1;
+    }
+
+    // Redraw once the dock has reported the same geometry for ~360 ms.
+    if (stableSamples >= 3 && refreshTerminalSize(observed)) {
+      candidate = undefined;
+      stableSamples = 0;
+      await queueDraw();
+    }
   }
 }
 
@@ -456,7 +485,6 @@ try {
         break;
       }
       await handleInput(decoder.decode(input.subarray(0, count)));
-      refreshTerminalSize();
       if (running) await queueDraw();
     }
     await resizeWatcher;
