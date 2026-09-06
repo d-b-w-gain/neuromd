@@ -5,6 +5,9 @@ NeuroMD is a local, read-only terminal Markdown viewer. Markdown parsing and ter
 The viewer tracks terminal resizing and redraws to use the full available width and height.
 It maintains a true-black application background across ANSI style resets and restores the terminal's normal colors when it exits.
 Resize events are debounced to avoid repaint stutter in embedded and docked terminal emulators.
+The startup ident also redraws after a dock or window resize instead of allowing the
+terminal to reflow an obsolete frame. Its visible `v0.2.0` marker identifies the
+running build in screenshots and issue reports.
 
 ## Run
 
@@ -75,7 +78,7 @@ The startup ident remains on screen until you press Enter.
 - `g`, `G`, Home, End: jump to the beginning or end
 - `r`: toggle rendered Markdown and source
 - `R`: reload the file
-- `L`: show or hide the 15-row NeuroMD logo
+- `L`: show or hide the 16-row NeuroMD logo
 - `?`: show key help
 - `q`, Ctrl-C: quit
 

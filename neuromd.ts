@@ -1,4 +1,5 @@
 const ESC = "\x1b[";
+const VERSION = "0.2.0";
 const TERMINAL_RESET = `${ESC}0m`;
 const BLACK_BACKGROUND = `${ESC}48;2;0;0;0m`;
 const RESET = `${TERMINAL_RESET}${BLACK_BACKGROUND}`;
@@ -20,7 +21,8 @@ interface EngineExports extends WebAssembly.Exports {
 }
 
 function usage(): never {
-  console.log(`NeuroMD 0.1.0 — a small Rust-powered terminal Markdown viewer
+  console.log(
+    `NeuroMD ${VERSION} — a small Rust-powered terminal Markdown viewer
 
 Usage:
   neuromd <file.md>
@@ -34,13 +36,14 @@ Keys:
   R              reload file
   L              show logo
   ?              help
-  q/Ctrl-C       quit`);
+  q/Ctrl-C       quit`,
+  );
   Deno.exit(0);
 }
 
 if (Deno.args.includes("--help") || Deno.args.includes("-h")) usage();
 if (Deno.args.includes("--version") || Deno.args.includes("-V")) {
-  console.log("NeuroMD 0.1.0");
+  console.log(`NeuroMD ${VERSION}`);
   Deno.exit(0);
 }
 
@@ -187,15 +190,32 @@ function centered(text: string, width: number): string {
   return `${" ".repeat(left)}${text}`;
 }
 
+function centeredField(text: string, width: number): string {
+  const remaining = Math.max(0, width - [...text].length);
+  const left = Math.floor(remaining / 2);
+  return `${" ".repeat(left)}${text}${" ".repeat(remaining - left)}`;
+}
+
+function framedRule(text: string, width: number): string {
+  const label = ` ${text} `;
+  const ruleWidth = Math.max(0, width - [...label].length);
+  const left = Math.floor(ruleWidth / 2);
+  return `╭${"─".repeat(left)}${label}${"─".repeat(ruleWidth - left)}╮`;
+}
+
 function logoLines(width: number): string[] {
-  const label = width >= 72 ? "NEUROMD" : "NMD";
+  const label = width >= 72 ? "NEUROMD" : width >= 32 ? "NMD" : "N";
+  const frameWidth = Math.min(61, Math.max(22, width - 2));
+  const brand = width >= 52 ? "N E U R O M D" : "N M D";
+  const descriptor = width >= 42
+    ? "NEURAL MARKDOWN TERMINAL"
+    : "MARKDOWN TERMINAL";
   const lines: string[] = [
-    `${DIM}${
-      centered("╭─────────────── N E U R O M D ───────────────╮", width)
-    }${RESET}`,
+    `${DIM}${centered(framedRule(brand, frameWidth), width)}${RESET}`,
     `${CYAN}${
-      centered("╰─╮       NEURAL MARKDOWN TERMINAL       ╭─╯", width)
+      centered(`│${centeredField(descriptor, frameWidth)}│`, width)
     }${RESET}`,
+    `${DIM}${centered(`╰${"─".repeat(frameWidth)}╯`, width)}${RESET}`,
   ];
 
   for (let row = 0; row < 7; row++) {
@@ -212,7 +232,7 @@ function logoLines(width: number): string[] {
       centered("◆  RUST CORE  ──  WASM SIGNAL  ──  DENO SHELL  ◆", width)
     }${RESET}`,
     `${DIM}${
-      centered("╶──────────────[ READ // ONLY ]──────────────╴", width)
+      centered(`╶───────────[ READ // ONLY · v${VERSION} ]───────────╴`, width)
     }${RESET}`,
     "",
     `${MAGENTA}${
@@ -316,7 +336,7 @@ async function draw(): Promise<void> {
       Math.min(lines.length, scroll + height)
     }/${lines.length}`;
   const modeText = ` ${displayMode}  ${progress} `;
-  const titlePrefix = " NEURO-MD  ";
+  const titlePrefix = ` NEURO-MD v${VERSION}  `;
   const fileNameWidth = Math.max(
     1,
     size.columns - titlePrefix.length - modeText.length - 2,
@@ -394,24 +414,85 @@ async function reload(): Promise<void> {
   }
 }
 
-async function showBootLogo(): Promise<boolean> {
-  const logo = logoLines(size.columns);
-  const topPadding = Math.max(0, Math.floor((size.rows - logo.length) / 2));
-  let frame = `${ESC}H${ESC}2J${"\r\n".repeat(topPadding)}`;
-  frame += logo.map((line) => `${ESC}2K${line}`).join("\r\n");
-  frame += `\r\n${ESC}2K${DIM}${
-    centered("PRESS ENTER TO OPEN", size.columns)
-  }${RESET}`;
-  await write(frame);
+async function drawBootLogo(): Promise<void> {
+  const screenLines = [
+    ...logoLines(size.columns),
+    `${DIM}${centered("PRESS ENTER TO OPEN", size.columns)}${RESET}`,
+  ];
+  const top = Math.max(1, Math.floor((size.rows - screenLines.length) / 2) + 1);
 
-  const key = new Uint8Array(16);
-  while (true) {
-    const count = await Deno.stdin.read(key);
-    if (count === null) return false;
-    const data = decoder.decode(key.subarray(0, count));
-    if (data.includes("\r") || data.includes("\n")) return true;
-    if (data.includes("\x03")) return false;
+  // A splash can remain open while an embedded terminal is being docked. Use
+  // absolute rows and disable auto-wrap so its old geometry is never reflowed.
+  let frame = `${RESET}${ESC}?7l${ESC}2J`;
+  for (let index = 0; index < screenLines.length; index++) {
+    const row = top + index;
+    if (row > size.rows) break;
+    frame += `${ESC}${row};1H${ESC}2K${screenLines[index]}${RESET}`;
   }
+  frame += `${ESC}?7h`;
+  await write(frame);
+}
+
+async function showBootLogo(): Promise<boolean> {
+  let booting = true;
+  let candidate: { columns: number; rows: number } | undefined;
+  let stableSamples = 0;
+  let bootDrawQueue = Promise.resolve();
+  const queueBootDraw = () => {
+    bootDrawQueue = bootDrawQueue.then(drawBootLogo, drawBootLogo);
+    return bootDrawQueue;
+  };
+
+  await queueBootDraw();
+  const resizeWatcher = (async () => {
+    while (booting) {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      if (!booting) break;
+
+      const observed = terminalSize();
+      if (observed.columns === size.columns && observed.rows === size.rows) {
+        candidate = undefined;
+        stableSamples = 0;
+        continue;
+      }
+
+      if (
+        candidate?.columns === observed.columns &&
+        candidate.rows === observed.rows
+      ) {
+        stableSamples += 1;
+      } else {
+        candidate = observed;
+        stableSamples = 1;
+      }
+
+      if (stableSamples >= 3 && refreshTerminalSize(observed)) {
+        candidate = undefined;
+        stableSamples = 0;
+        await queueBootDraw();
+      }
+    }
+  })();
+
+  let proceed = false;
+  const key = new Uint8Array(16);
+  try {
+    while (true) {
+      const count = await Deno.stdin.read(key);
+      if (count === null) break;
+      const data = decoder.decode(key.subarray(0, count));
+      if (data.includes("\r") || data.includes("\n")) {
+        proceed = true;
+        break;
+      }
+      if (data.includes("\x03")) break;
+    }
+  } finally {
+    booting = false;
+    await resizeWatcher;
+    await bootDrawQueue;
+  }
+  return proceed;
 }
 
 async function clearScreenBlack(): Promise<void> {
