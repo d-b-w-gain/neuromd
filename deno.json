@@ -1,0 +1,5 @@
+{
+  "tasks": {
+    "view": "deno run --allow-read --deny-write --deny-net --deny-run --deny-ffi neuromd.ts"
+  }
+}

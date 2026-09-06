@@ -1,0 +1,21 @@
+[package]
+name = "neuromd-engine"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Small Markdown-to-terminal renderer for NeuroMD"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pulldown-cmark = { version = "0.9.6", default-features = false }
+unicode-width = "0.2.0"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+

@@ -1,0 +1,15 @@
+/target/
+/.cargo/
+/.rustup/
+
+*.exe
+*.zip
+*.reg
+
+.env
+.env.*
+!.env.example
+
+*.log
+*.tmp
+*.bak
