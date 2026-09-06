@@ -16,7 +16,7 @@ if "%~1"=="" (
   set "NEUROMD_FILE=%~f1"
 )
 
-deno run --allow-read --deny-write --deny-net --deny-run --deny-ffi "%~dp0neuromd.ts" "%NEUROMD_FILE%"
+deno run --allow-read --allow-write="%TEMP%" --allow-net --allow-run=powershell.exe --deny-ffi "%~dp0neuromd.ts" "%NEUROMD_FILE%"
 if errorlevel 1 (
   echo.
   echo NeuroMD exited with an error.
@@ -24,4 +24,3 @@ if errorlevel 1 (
 )
 
 endlocal
-

@@ -1,5 +1,5 @@
 {
   "tasks": {
-    "view": "deno run --allow-read --deny-write --deny-net --deny-run --deny-ffi neuromd.ts"
+    "view": "deno run --allow-read --allow-write --allow-net --allow-run=powershell.exe --deny-ffi neuromd.ts"
   }
 }

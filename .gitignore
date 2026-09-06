@@ -13,3 +13,5 @@
 *.log
 *.tmp
 *.bak
+
+neuromd.json

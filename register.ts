@@ -5,7 +5,7 @@ const progId = "NeuroMD.Markdown";
 const classes = "HKCU\\Software\\Classes";
 const capabilities = "HKCU\\Software\\NeuroMD\\Capabilities";
 const openCommand =
-  `"${denoPath}" run --allow-read --deny-write --deny-net --deny-run --deny-ffi "${appPath}" "%1"`;
+  `"${denoPath}" run --allow-read --allow-write="%TEMP%" --allow-net --allow-run=powershell.exe --deny-ffi "${appPath}" "%1"`;
 
 async function reg(...args: string[]): Promise<void> {
   if (dryRun) {

@@ -1,12 +1,12 @@
 # NeuroMD MVP
 
-NeuroMD is a local, read-only terminal Markdown viewer. Markdown parsing and terminal rendering happen in a small Rust WebAssembly module; Deno supplies the terminal and capability sandbox. It is not a website and does not start a server.
+NeuroMD is a local, read-only terminal Markdown viewer. Markdown parsing and terminal rendering happen in a small Rust WebAssembly module; Deno supplies the terminal, Kokoro connection, and capability sandbox. It is not a website and does not start a server.
 
 The viewer tracks terminal resizing and redraws to use the full available width and height.
 It maintains a true-black application background across ANSI style resets and restores the terminal's normal colors when it exits.
 Resize events are debounced to avoid repaint stutter in embedded and docked terminal emulators.
 The startup ident also redraws after a dock or window resize instead of allowing the
-terminal to reflow an obsolete frame. Its visible `v0.2.0` marker identifies the
+terminal to reflow an obsolete frame. Its visible `v0.3.0` marker identifies the
 running build in screenshots and issue reports.
 
 ## Run
@@ -55,10 +55,10 @@ requires this final user choice and does not permit applications to silently
 replace a default handler.
 
 The registered open command launches the signed Deno runtime directly. NeuroMD
-continues to receive read access while writes, networking, subprocesses, and
-native FFI remain denied.
-
-The task grants read access while explicitly denying writes, networking, subprocesses, and native FFI. Deno and Windows still enforce the current user's ordinary filesystem permissions.
+receives read access for the Markdown file, temporary-directory write access for
+WAV playback, network access to Kokoro, and permission to launch the built-in
+Windows PowerShell WAV player. Native FFI remains denied. Deno and Windows still
+enforce the current user's ordinary filesystem permissions.
 
 Install `neuromd` as a command from this directory:
 
@@ -78,9 +78,31 @@ The startup ident remains on screen until you press Enter.
 - `g`, `G`, Home, End: jump to the beginning or end
 - `r`: toggle rendered Markdown and source
 - `R`: reload the file
+- `s`: start or stop Kokoro narration at the current top line
 - `L`: show or hide the 16-row NeuroMD logo
 - `?`: show key help
 - `q`, Ctrl-C: quit
+
+## Kokoro narration
+
+Press `s` to read from the current top line. NeuroMD requests short WAV chunks,
+plays them through Windows' built-in `System.Media.SoundPlayer`, highlights the
+active Kokoro word or phoneme group, and scrolls when the highlight leaves the
+screen. Press `s` again to stop immediately.
+
+Copy `neuromd.example.json` to `neuromd.json` beside `NeuroMD.exe` or beside the
+Deno executable used to run the source, then set the Kokoro base URL, voice, and
+speed. The local configuration file is ignored by Git. Command-line options take
+precedence:
+
+```powershell
+.\NeuroMD.exe --kokoro-url http://127.0.0.1:8880 --voice af_bella --speed 1 README.md
+```
+
+NeuroMD first tries Kokoro-FastAPI's `/dev/captioned_speech` endpoint for exact
+timestamps. If a reverse proxy exposes only `/v1/audio/speech`, narration still
+works and highlighting uses WAV-duration-weighted estimates; the footer reports
+`EXACT WORD TIMING` or `ESTIMATED WORD TIMING` while it reads.
 
 ## Build the Rust engine
 
@@ -96,4 +118,10 @@ The checked-in `neuromd_engine.wasm` is the only build artifact required at runt
 
 ## Security boundary
 
-NeuroMD receives filesystem read permission so it can open the path supplied by the user. It receives no write, network, subprocess, or FFI permission. The Rust WebAssembly module has no WASI imports and cannot access the operating system directly; Deno passes Markdown bytes into it and receives rendered terminal text back.
+NeuroMD receives filesystem read permission so it can open the path supplied by
+the user. Narration additionally needs temporary-file write access, network
+access to the configured Kokoro server, and permission to start
+`powershell.exe` for WAV playback. It receives no native FFI permission and does
+not modify the Markdown file. The Rust WebAssembly module has no WASI imports
+and cannot access the operating system directly; Deno passes Markdown bytes into
+it and receives rendered terminal text back.
