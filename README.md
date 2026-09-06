@@ -2,6 +2,8 @@
 
 NeuroMD is a local, read-only terminal Markdown viewer. Markdown parsing and terminal rendering happen in a small Rust WebAssembly module; Deno supplies the terminal, Kokoro connection, and capability sandbox. It is not a website and does not start a server.
 
+![NeuroMD terminal splash screen](docs/splash_screen.png)
+
 The viewer tracks terminal resizing and redraws to use the full available width and height.
 It maintains a true-black application background across ANSI style resets and restores the terminal's normal colors when it exits.
 Resize events are debounced to avoid repaint stutter in embedded and docked terminal emulators.
