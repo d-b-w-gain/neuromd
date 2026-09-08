@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  viewer:
+    name: Viewer (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Check formatting
+        run: deno fmt --check neuromd.ts register.ts
+      - name: Lint
+        run: deno lint neuromd.ts register.ts
+      - name: Type-check
+        run: deno check neuromd.ts register.ts
+      - name: Smoke-test Markdown rendering
+        shell: bash
+        run: |
+          deno task view -- demo.md > rendered.txt
+          grep -q "NeuroMD" rendered.txt
+
+  engine:
+    name: Rust engine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Test
+        run: cargo test --locked
+      - name: Build WebAssembly
+        run: cargo build --release --locked --target wasm32-unknown-unknown
+
+  windows-helpers:
+    name: Windows helper scripts
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse PowerShell scripts
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($path in @(
+            "Install-NeuroMD-Kokoro.ps1",
+            "Start-NeuroMD-Kokoro.ps1"
+          )) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref] $tokens,
+              [ref] $errors
+            ) | Out-Null
+            foreach ($errorItem in $errors) {
+              Write-Error "${path}: $errorItem"
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
