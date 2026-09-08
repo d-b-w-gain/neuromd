@@ -1,5 +1,5 @@
 const ESC = "\x1b[";
-const VERSION = "0.3.1";
+const VERSION = "0.4.1";
 const TERMINAL_RESET = `${ESC}0m`;
 const BLACK_BACKGROUND = `${ESC}48;2;0;0;0m`;
 const RESET = `${TERMINAL_RESET}${BLACK_BACKGROUND}`;
@@ -43,6 +43,16 @@ interface SpeechCue {
   line: number;
   columnStart: number;
   columnEnd: number;
+}
+
+interface KokoroSetupModal {
+  status: "offline" | "installing" | "ready" | "error";
+  detail: string;
+  returnScroll: number;
+  progress: number;
+  stage: string;
+  activity: number;
+  log: string[];
 }
 
 interface EngineExports extends WebAssembly.Exports {
@@ -108,21 +118,35 @@ for (let index = 0; index < Deno.args.length; index++) {
 if (requestedPath === undefined) usage();
 const filePath: string = requestedPath;
 
+const executableDirectory = Deno.execPath().replace(/[\\/][^\\/]+$/, "");
+const executableConfigPath = `${executableDirectory}${
+  Deno.build.os === "windows" ? "\\" : "/"
+}neuromd.json`;
+const sourceConfigUrl = new URL("./neuromd.json", import.meta.url);
+
 async function readLocalConfig(): Promise<NeuroConfig> {
-  const executableDirectory = Deno.execPath().replace(/[\\/][^\\/]+$/, "");
-  const configPath = `${executableDirectory}\\neuromd.json`;
-  try {
-    return JSON.parse(await Deno.readTextFile(configPath)) as NeuroConfig;
-  } catch (error) {
-    if (!(error instanceof Deno.errors.NotFound)) {
-      console.error(`NeuroMD: ignoring invalid config at ${configPath}`);
+  const candidates: Array<string | URL> = [
+    executableConfigPath,
+    sourceConfigUrl,
+  ];
+  for (const configPath of candidates) {
+    try {
+      const configText = (await Deno.readTextFile(configPath)).replace(
+        /^\uFEFF/,
+        "",
+      );
+      return JSON.parse(configText) as NeuroConfig;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        console.error(`NeuroMD: ignoring invalid config at ${configPath}`);
+      }
     }
-    return {};
   }
+  return {};
 }
 
 const localConfig = await readLocalConfig();
-const kokoroUrl = (requestedKokoroUrl ?? localConfig.kokoroUrl ??
+let kokoroUrl = (requestedKokoroUrl ?? localConfig.kokoroUrl ??
   "http://127.0.0.1:8880").replace(/\/+$/, "");
 const kokoroVoice = requestedVoice ?? localConfig.voice ?? "af_bella";
 const kokoroSpeed = requestedSpeed ?? localConfig.speed ?? 1;
@@ -349,6 +373,9 @@ let speechTask: Promise<void> | undefined;
 let speechPlayer: Deno.ChildProcess | undefined;
 let speechHighlight: SpeechCue | undefined;
 let captionApiAvailable: boolean | undefined;
+let kokoroSetup: KokoroSetupModal | undefined;
+let kokoroSetupTask: Promise<void> | undefined;
+let kokoroSetupDrawTimer: ReturnType<typeof setTimeout> | undefined;
 
 const ANSI_ESCAPE = String.fromCharCode(27);
 const ANSI_PATTERN = new RegExp(`${ANSI_ESCAPE}\\[[0-?]*[ -/]*[@-~]`, "g");
@@ -527,6 +554,191 @@ function speechCues(
   return cues;
 }
 
+async function kokoroIsReachable(
+  endpoint = kokoroUrl,
+  timeoutMs = 3000,
+): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${endpoint}/openapi.json`, {
+      signal: controller.signal,
+    });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function openKokoroSetup(detail: string): void {
+  if (kokoroSetup) {
+    kokoroSetup.status = "offline";
+    kokoroSetup.detail = detail;
+    kokoroSetup.progress = 0;
+    kokoroSetup.stage = "Endpoint check";
+    kokoroSetup.log = [];
+    return;
+  }
+  kokoroSetup = {
+    status: "offline",
+    detail,
+    returnScroll: scroll,
+    progress: 0,
+    stage: "Endpoint check",
+    activity: 0,
+    log: [],
+  };
+  scroll = 0;
+}
+
+function closeKokoroSetup(): void {
+  if (!kokoroSetup) return;
+  scroll = kokoroSetup.returnScroll;
+  kokoroSetup = undefined;
+}
+
+function requestKokoroSetupDraw(): void {
+  if (kokoroSetupDrawTimer !== undefined) return;
+  kokoroSetupDrawTimer = setTimeout(() => {
+    kokoroSetupDrawTimer = undefined;
+    if (running) void queueDraw();
+  }, 100);
+}
+
+function cleanSetupLine(line: string): string {
+  // deno-lint-ignore no-control-regex -- ANSI CSI starts with ESC.
+  return line.replace(new RegExp("\\x1b\\[[0-?]*[ -/]*[@-~]", "g"), "")
+    // deno-lint-ignore no-control-regex -- remove terminal control bytes.
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
+    .trim();
+}
+
+function acceptSetupLine(rawLine: string, isError: boolean): void {
+  if (!kokoroSetup) return;
+  const line = cleanSetupLine(rawLine);
+  if (!line) return;
+  const progress = /^NEUROMD_PROGRESS\|(\d{1,3})\|(.*)$/.exec(line);
+  if (progress) {
+    kokoroSetup.progress = Math.max(0, Math.min(100, Number(progress[1])));
+    kokoroSetup.stage = progress[2].trim() || "Working";
+    kokoroSetup.detail = kokoroSetup.stage;
+  } else if (!line.startsWith("NEUROMD_SETUP:")) {
+    const displayLine = isError ? `! ${line}` : line;
+    if (kokoroSetup.log.at(-1) !== displayLine) {
+      kokoroSetup.log.push(displayLine);
+      kokoroSetup.log = kokoroSetup.log.slice(-4);
+    }
+  }
+  lastMessage = `KOKORO · ${kokoroSetup.stage.toLocaleUpperCase()}`;
+  requestKokoroSetupDraw();
+}
+
+async function consumeSetupStream(
+  stream: ReadableStream<Uint8Array>,
+  isError: boolean,
+): Promise<void> {
+  const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
+  let pending = "";
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      pending += value;
+      const lines = pending.split(/\r\n|[\r\n]/);
+      pending = lines.pop() ?? "";
+      for (const line of lines) acceptSetupLine(line, isError);
+    }
+    if (pending) acceptSetupLine(pending, isError);
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function installLocalKokoro(): void {
+  if (kokoroSetupTask || !kokoroSetup) return;
+  kokoroSetup.status = "installing";
+  kokoroSetup.detail =
+    "Installing under LocalAppData. The first download may take several minutes.";
+  kokoroSetup.progress = 1;
+  kokoroSetup.stage = "Preparing local installation";
+  kokoroSetup.activity = 0;
+  kokoroSetup.log = [];
+  lastMessage = "KOKORO · LOCAL INSTALL IN PROGRESS";
+  void queueDraw();
+
+  const installerPath = `${executableDirectory}\\Install-NeuroMD-Kokoro.ps1`;
+  const task = (async () => {
+    const activityTimer = setInterval(() => {
+      if (kokoroSetup?.status !== "installing") return;
+      kokoroSetup.activity = (kokoroSetup.activity + 1) % 8;
+      requestKokoroSetupDraw();
+    }, 180);
+    try {
+      await Deno.stat(installerPath);
+      const child = new Deno.Command("powershell.exe", {
+        args: [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          installerPath,
+          "-AppDirectory",
+          executableDirectory,
+        ],
+        stdin: "null",
+        stdout: "piped",
+        stderr: "piped",
+      }).spawn();
+      const stdoutTask = consumeSetupStream(child.stdout, false);
+      const stderrTask = consumeSetupStream(child.stderr, true);
+      const status = await child.status;
+      await Promise.all([stdoutTask, stderrTask]);
+      if (!status.success) {
+        const detail = kokoroSetup?.log.slice(-3).join(" · ") ||
+          `The setup process exited with code ${status.code}.`;
+        throw new Error(detail);
+      }
+      kokoroUrl = "http://127.0.0.1:8880";
+      captionApiAvailable = undefined;
+      if (!(await kokoroIsReachable(kokoroUrl, 5000))) {
+        throw new Error(
+          "Local Kokoro installed but its endpoint is not ready.",
+        );
+      }
+      if (kokoroSetup) {
+        kokoroSetup.status = "ready";
+        kokoroSetup.progress = 100;
+        kokoroSetup.stage = "Local service ready";
+        kokoroSetup.detail =
+          "Local Kokoro is ready on 127.0.0.1:8880. Press Enter to read.";
+      }
+      lastMessage = "KOKORO · LOCAL SERVICE READY";
+    } catch (error) {
+      if (kokoroSetup) {
+        kokoroSetup.status = "error";
+        kokoroSetup.stage = "Setup failed";
+        kokoroSetup.detail = error instanceof Error
+          ? error.message
+          : String(error);
+      }
+      lastMessage = "KOKORO · LOCAL INSTALL FAILED";
+    } finally {
+      clearInterval(activityTimer);
+      if (kokoroSetupDrawTimer !== undefined) {
+        clearTimeout(kokoroSetupDrawTimer);
+        kokoroSetupDrawTimer = undefined;
+      }
+      kokoroSetupTask = undefined;
+      if (running) await queueDraw();
+    }
+  })();
+  kokoroSetupTask = task;
+}
+
 async function requestSpeech(
   chunk: SpeechChunk,
   signal: AbortSignal,
@@ -698,10 +910,20 @@ function stopNarration(message = "KOKORO · STOPPED"): void {
   lastMessage = message;
 }
 
-function toggleNarration(): void {
+async function toggleNarration(skipProbe = false): Promise<void> {
   if (speechTask) {
     stopNarration();
     return;
+  }
+  if (!skipProbe) {
+    lastMessage = `KOKORO · CHECKING ${kokoroUrl}`;
+    await queueDraw();
+    if (!(await kokoroIsReachable())) {
+      openKokoroSetup(`No response from ${kokoroUrl}`);
+      lastMessage = "KOKORO · ENDPOINT OFFLINE";
+      await queueDraw();
+      return;
+    }
   }
   showHelp = false;
   showLogo = false;
@@ -709,11 +931,15 @@ function toggleNarration(): void {
   const controller = new AbortController();
   speechController = controller;
   const task = narrate(scroll, controller.signal)
-    .catch((error) => {
+    .catch(async (error) => {
       if (!controller.signal.aborted) {
-        lastMessage = `KOKORO FAILED · ${
-          error instanceof Error ? error.message : String(error)
-        }`;
+        const detail = error instanceof Error ? error.message : String(error);
+        if (!(await kokoroIsReachable())) {
+          openKokoroSetup(detail);
+          lastMessage = "KOKORO · ENDPOINT WENT OFFLINE";
+        } else {
+          lastMessage = `KOKORO FAILED · ${detail}`;
+        }
       }
     })
     .finally(async () => {
@@ -721,7 +947,8 @@ function toggleNarration(): void {
       if (speechController === controller) speechController = undefined;
       speechHighlight = undefined;
       if (
-        !controller.signal.aborted && !lastMessage.startsWith("KOKORO FAILED")
+        !controller.signal.aborted && !kokoroSetup &&
+        !lastMessage.startsWith("KOKORO FAILED")
       ) {
         lastMessage = "KOKORO · COMPLETE";
       }
@@ -734,7 +961,99 @@ function contentHeight(): number {
   return Math.max(1, size.rows - 2);
 }
 
+function wrapWords(text: string, width: number): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    if (!line) line = word;
+    else if (line.length + word.length + 1 <= width) line += ` ${word}`;
+    else {
+      lines.push(line);
+      line = word;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.length ? lines : [""];
+}
+
+function setupProgressText(innerWidth: number): string {
+  if (!kokoroSetup) return "";
+  const barWidth = Math.max(8, Math.min(46, innerWidth - 14));
+  const progress = Math.max(0, Math.min(100, kokoroSetup.progress));
+  const filled = Math.floor((progress / 100) * barWidth);
+  const cells: string[] = Array.from(
+    { length: barWidth },
+    (_, index) => index < filled ? "━" : "·",
+  );
+  if (progress < 100 && filled < barWidth) {
+    const remaining = barWidth - filled;
+    cells[filled + (kokoroSetup.activity % remaining)] = "◆";
+  }
+  return `  [${cells.join("")}] ${String(progress).padStart(3)}%`;
+}
+
+function kokoroSetupLines(width: number): string[] {
+  if (!kokoroSetup) return [];
+  const innerWidth = Math.max(28, Math.min(70, width - 6));
+  const indent = " ".repeat(
+    Math.max(0, Math.floor((width - innerWidth - 2) / 2)),
+  );
+  const border = "─".repeat(innerWidth);
+  const row = (text = "", style = PALE) => {
+    const clipped = clipPlain(text, innerWidth);
+    return `${indent}${DIM}│${RESET}${style}${clipped}${
+      " ".repeat(Math.max(0, innerWidth - clipped.length))
+    }${RESET}${DIM}│${RESET}`;
+  };
+  const status = kokoroSetup.status === "installing"
+    ? "INSTALLING LOCAL KOKORO"
+    : kokoroSetup.status === "ready"
+    ? "LOCAL KOKORO READY"
+    : kokoroSetup.status === "error"
+    ? "LOCAL SETUP FAILED"
+    : "KOKORO ENDPOINT OFFLINE";
+  const detail = wrapWords(kokoroSetup.detail, innerWidth - 4);
+  const rows = [
+    `${indent}${DIM}╭${border}╮${RESET}`,
+    row(`  ${status}`, kokoroSetup.status === "error" ? MAGENTA : CYAN),
+    row(),
+  ];
+  if (kokoroSetup.status === "installing") {
+    rows.push(
+      ...wrapWords(kokoroSetup.stage, innerWidth - 4).map((line) =>
+        row(`  ${line}`, PALE)
+      ),
+      row(setupProgressText(innerWidth), CYAN),
+      row(),
+      ...kokoroSetup.log.slice(-3).map((line) => row(`  › ${line}`, DIM)),
+      row(),
+      row("  Keep this window open; no administrator access is used.", DIM),
+    );
+  } else if (kokoroSetup.status === "ready") {
+    rows.push(
+      ...detail.map((line) => row(`  ${line}`)),
+      row(),
+      row("  [ ENTER ]  START READING", CYAN),
+      row("  [ ESC   ]  CLOSE", DIM),
+    );
+  } else {
+    rows.push(
+      ...detail.map((line) => row(`  ${line}`)),
+      row(),
+      row("  [ I ]  INSTALL / START LOCAL KOKORO", CYAN),
+      row("  [ R ]  RETRY CONFIGURED ENDPOINT", PALE),
+      row("  [ ESC ]  CONTINUE WITHOUT SPEECH", DIM),
+      row(),
+      row("  Downloads: Astral uv, Python, Kokoro and model data.", DIM),
+      row("  Source: github.com/remsky/Kokoro-FastAPI", DIM),
+    );
+  }
+  rows.push(`${indent}${DIM}╰${border}╯${RESET}`);
+  return ["", "", ...rows];
+}
+
 function activeLines(): string[] {
+  if (kokoroSetup) return kokoroSetupLines(size.columns);
   if (showLogo) return logoLines(size.columns);
   if (showHelp) {
     return [
@@ -753,7 +1072,7 @@ function activeLines(): string[] {
       `${CYAN}?${RESET}            close this help`,
       `${CYAN}q / Ctrl-C${RESET}   terminate`,
       "",
-      `${DIM}Speech uses the configured Kokoro server and Windows WAV player.${RESET}`,
+      `${DIM}If Kokoro is offline, s opens the local voice setup panel.${RESET}`,
     ];
   }
   return raw ? rawLines(source, size.columns) : renderedLines;
@@ -795,7 +1114,13 @@ async function draw(): Promise<void> {
   clampScroll(lines);
   const height = contentHeight();
   const mode = showHelp ? "HELP" : raw ? "SOURCE" : "RENDERED";
-  const displayMode = showLogo ? "IDENT" : speechTask ? "SPEAKING" : mode;
+  const displayMode = kokoroSetup
+    ? "KOKORO SETUP"
+    : showLogo
+    ? "IDENT"
+    : speechTask
+    ? "SPEAKING"
+    : mode;
   const progress = lines.length <= height
     ? "ALL"
     : `${Math.min(lines.length, scroll + 1)}-${
@@ -985,6 +1310,48 @@ function keyIncludes(data: string, ...keys: string[]): boolean {
 
 async function handleInput(data: string): Promise<void> {
   const height = contentHeight();
+  if (kokoroSetup) {
+    if (kokoroSetup.status === "installing") {
+      if (keyIncludes(data, "q", "\x03", "\x1b")) {
+        kokoroSetup.detail =
+          "Installation is still running. Keep NeuroMD open until it finishes.";
+        lastMessage = "KOKORO · INSTALL STILL RUNNING";
+      }
+      return;
+    }
+    if (data.includes("\x1b")) {
+      closeKokoroSetup();
+      lastMessage = "KOKORO · SETUP CLOSED";
+      return;
+    }
+    if (data.toLowerCase() === "i") {
+      installLocalKokoro();
+      return;
+    }
+    if (data.toLowerCase() === "r") {
+      kokoroSetup.detail = `Checking ${kokoroUrl}`;
+      lastMessage = "KOKORO · CHECKING ENDPOINT";
+      await queueDraw();
+      if (await kokoroIsReachable()) {
+        closeKokoroSetup();
+        lastMessage = "KOKORO · ENDPOINT READY";
+        await toggleNarration(true);
+      } else if (kokoroSetup) {
+        kokoroSetup.status = "offline";
+        kokoroSetup.detail = `Still no response from ${kokoroUrl}`;
+        lastMessage = "KOKORO · ENDPOINT OFFLINE";
+      }
+      return;
+    }
+    if (
+      kokoroSetup.status === "ready" &&
+      (data.includes("\r") || data.includes("\n"))
+    ) {
+      closeKokoroSetup();
+      await toggleNarration(true);
+    }
+    return;
+  }
   if (keyIncludes(data, "q", "\x03")) {
     stopNarration("KOKORO · STOPPED");
     running = false;
@@ -1010,7 +1377,7 @@ async function handleInput(data: string): Promise<void> {
   } else if (data === "R") {
     await reload();
   } else if (data === "s") {
-    toggleNarration();
+    await toggleNarration();
   } else if (keyIncludes(data, "\x1b[6~", " ")) {
     scroll += height;
   } else if (data.includes("\x1b[5~")) {
